@@ -1,0 +1,71 @@
+name: Check upstream releases
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check crates.io and rewrite versions.env
+        id: update
+        run: |
+          set -eu
+          ua="crustybox-ci (+https://github.com/${{ github.repository }})"
+
+          # ENV_VAR_NAME:crate_name -- one entry per tracked dependency.
+          deps="
+            UUTILS_COREUTILS_VERSION:coreutils
+            BRUSH_SHELL_VERSION:brush-shell
+            PROCS_VERSION:procs
+            BOTTOM_VERSION:bottom
+            OUCH_VERSION:ouch
+            DIFFUTILS_VERSION:diffutils
+            FINDUTILS_VERSION:findutils
+            SED_VERSION:sed
+            GREP_VERSION:uu_grep
+          "
+
+          . ./versions.env
+          changed=false
+          summary=""
+          : > versions.env
+
+          for entry in $deps; do
+            var="${entry%%:*}"
+            crate="${entry#*:}"
+            current="$(eval echo \"\$$var\")"
+            latest=$(curl -fsSL -A "$ua" "https://crates.io/api/v1/crates/${crate}" | jq -r '.crate.max_stable_version')
+            echo "${var}=${latest}" >> versions.env
+            if [ "${latest}" != "${current}" ]; then
+              changed=true
+              summary="${summary}- \`${crate}\`: ${current} -> ${latest}\n"
+            fi
+          done
+
+          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
+          printf 'summary<<EOF\n%bEOF\n' "${summary}" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR
+        if: steps.update.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          commit-message: "chore: bump dependency versions"
+          title: "chore: bump dependency versions"
+          body: |
+            Automated bump, triggered by new crates.io releases:
+
+            ${{ steps.update.outputs.summary }}
+
+            Merging this triggers `build-and-push.yml`, publishing a new
+            multi-arch crustybox image pinned to these versions.
+          branch: chore/bump-dependency-versions
+          labels: dependencies
